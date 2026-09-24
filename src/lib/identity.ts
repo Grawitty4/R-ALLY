@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ID_KEY = 'rally.deviceId';
 const NAME_KEY = 'rally.displayName';
+const PHONE_KEY = 'rally.phone';
 
 const PALETTE = [
   '#C47B12',
@@ -47,4 +48,16 @@ export async function getSavedName() {
 
 export async function saveName(name: string) {
   await AsyncStorage.setItem(NAME_KEY, name.trim());
+}
+
+export async function getSavedPhone() {
+  return (await AsyncStorage.getItem(PHONE_KEY)) ?? '';
+}
+
+export async function savePhone(phone: string) {
+  await AsyncStorage.setItem(PHONE_KEY, phone);
+}
+
+export async function clearSession() {
+  await AsyncStorage.multiRemove([NAME_KEY, PHONE_KEY]);
 }

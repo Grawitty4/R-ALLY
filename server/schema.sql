@@ -256,3 +256,12 @@ CREATE TABLE ride_photos (
 );
 
 CREATE INDEX ride_photos_ride_id_idx ON ride_photos (ride_id);
+
+CREATE TABLE otp_challenges (
+  phone text PRIMARY KEY,
+  code_hash text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  attempts int NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX riders_phone_key ON riders (phone) WHERE phone IS NOT NULL;

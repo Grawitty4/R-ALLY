@@ -1,3 +1,4 @@
+import { createHash, randomInt } from 'node:crypto';
 import express from 'express';
 
 import { decodeRoute, encodeRoute, routeKmAt, type LatLng } from './geo.js';
@@ -27,17 +28,119 @@ function deviceIdFrom(req: express.Request, body?: Record<string, unknown>) {
   return asString(req.header('x-device-id')) || asString(body?.deviceId);
 }
 
-async function upsertRider(deviceId: string, displayName: string) {
+async function upsertRider(deviceId: string, displayName: string, phone?: string) {
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO riders (device_id, display_name)
-     VALUES ($1, $2)
+    `INSERT INTO riders (device_id, display_name, phone)
+     VALUES ($1, $2, $3)
      ON CONFLICT (device_id) DO UPDATE
        SET display_name = EXCLUDED.display_name,
+           phone = COALESCE(EXCLUDED.phone, riders.phone),
            updated_at = now()
      RETURNING id`,
-    [deviceId, displayName || 'Rider'],
+    [deviceId, displayName || 'Rider', phone ?? null],
   );
   return result.rows[0].id;
+}
+
+function hashOtp(phone: string, code: string) {
+  return createHash('sha256').update(`${phone}:${code}`).digest('hex');
+}
+
+async function mergeRiderInto(fromId: string, toId: string) {
+  if (fromId === toId) return;
+  await pool.query(`UPDATE rides SET created_by = $1 WHERE created_by = $2`, [toId, fromId]);
+  await pool.query(`UPDATE bikes SET rider_id = $1 WHERE rider_id = $2`, [toId, fromId]);
+  await pool.query(
+    `DELETE FROM ride_members a
+     USING ride_members b
+     WHERE a.rider_id = $2 AND b.rider_id = $1 AND a.ride_id = b.ride_id`,
+    [toId, fromId],
+  );
+  await pool.query(`UPDATE ride_members SET rider_id = $1 WHERE rider_id = $2`, [toId, fromId]);
+  await pool.query(
+    `DELETE FROM ride_samples a
+     USING ride_samples b
+     WHERE a.rider_id = $2 AND b.rider_id = $1
+       AND a.ride_id = b.ride_id AND a.recorded_at = b.recorded_at`,
+    [toId, fromId],
+  );
+  await pool.query(`UPDATE ride_samples SET rider_id = $1 WHERE rider_id = $2`, [toId, fromId]);
+  await pool.query(`UPDATE ride_stops SET rider_id = $1 WHERE rider_id = $2`, [toId, fromId]);
+  await pool.query(`UPDATE ride_overtakes SET passer_id = $1 WHERE passer_id = $2`, [toId, fromId]);
+  await pool.query(`UPDATE ride_overtakes SET passed_id = $1 WHERE passed_id = $2`, [toId, fromId]);
+  await pool.query(`UPDATE ride_photos SET rider_id = $1 WHERE rider_id = $2`, [toId, fromId]);
+  await pool.query(`DELETE FROM riders WHERE id = $1`, [fromId]);
+}
+
+async function linkRider(deviceId: string, displayName: string, phone: string) {
+  const byPhone = await pool.query<{ id: string; device_id: string }>(
+    `SELECT id, device_id FROM riders WHERE phone = $1`,
+    [phone],
+  );
+  const byDevice = await pool.query<{ id: string; phone: string | null }>(
+    `SELECT id, phone FROM riders WHERE device_id = $1`,
+    [deviceId],
+  );
+
+  let riderId = byPhone.rows[0]?.id;
+  if (!riderId && byDevice.rowCount && !byDevice.rows[0].phone) {
+    await pool.query(
+      `UPDATE riders
+       SET phone = $2,
+           display_name = COALESCE(NULLIF($3, ''), display_name),
+           updated_at = now()
+       WHERE id = $1`,
+      [byDevice.rows[0].id, phone, displayName],
+    );
+    return byDevice.rows[0].id;
+  }
+  if (!riderId) {
+    return upsertRider(deviceId, displayName, phone);
+  }
+  if (byDevice.rowCount && byDevice.rows[0].id !== riderId) {
+    await mergeRiderInto(byDevice.rows[0].id, riderId);
+  }
+  if (byPhone.rows[0].device_id !== deviceId) {
+    await pool.query(
+      `UPDATE riders
+       SET device_id = device_id || '-prev-' || substr(id::text, 1, 8)
+       WHERE device_id = $1 AND id <> $2`,
+      [deviceId, riderId],
+    );
+  }
+  await pool.query(
+    `UPDATE riders
+     SET device_id = $1,
+         display_name = COALESCE(NULLIF($2, ''), display_name),
+         updated_at = now()
+     WHERE id = $3`,
+    [deviceId, displayName, riderId],
+  );
+  return riderId;
+}
+
+async function sendOtpSms(phone: string, code: string) {
+  const authKey = process.env.MSG91_AUTH_KEY;
+  const templateId = process.env.MSG91_TEMPLATE_ID;
+  if (!authKey || !templateId) return false;
+  const mobile = phone.replace(/^\+/, '');
+  const response = await fetch('https://control.msg91.com/api/v5/otp', {
+    method: 'POST',
+    headers: {
+      authkey: authKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      template_id: templateId,
+      mobile,
+      otp: code,
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`MSG91 ${response.status}: ${text.slice(0, 200)}`);
+  }
+  return true;
 }
 
 app.get('/health', async (_req, res) => {
@@ -47,6 +150,113 @@ app.get('/health', async (_req, res) => {
   } catch (error) {
     console.error(error);
     res.status(503).json({ ok: false, error: 'database_unavailable' });
+  }
+});
+
+app.post('/auth/otp/request', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const phone = asString(body.phone);
+  if (!/^\+\d{10,15}$/.test(phone)) {
+    res.status(400).json({ ok: false, error: 'Enter a valid mobile number.' });
+    return;
+  }
+  const code = String(randomInt(100000, 1000000));
+  try {
+    await pool.query(
+      `INSERT INTO otp_challenges (phone, code_hash, expires_at, attempts)
+       VALUES ($1, $2, now() + interval '5 minutes', 0)
+       ON CONFLICT (phone) DO UPDATE
+         SET code_hash = EXCLUDED.code_hash,
+             expires_at = EXCLUDED.expires_at,
+             attempts = 0`,
+      [phone, hashOtp(phone, code)],
+    );
+    let sent = false;
+    try {
+      sent = await sendOtpSms(phone, code);
+    } catch (error) {
+      console.error(error);
+    }
+    const echo = process.env.OTP_ECHO === '1';
+    if (!sent && !echo) {
+      res.status(503).json({
+        ok: false,
+        error: 'SMS is not configured yet. Set MSG91 keys, or OTP_ECHO=1 to test without SMS.',
+      });
+      return;
+    }
+    res.json({ ok: true, sent, ...(echo ? { devCode: code } : {}) });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ ok: false, error: 'Could not start OTP. Apply server/migrate_otp.sql.' });
+  }
+});
+
+app.post('/auth/otp/verify', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const phone = asString(body.phone);
+  const code = asString(body.code);
+  const deviceId = deviceIdFrom(req, body);
+  const displayName = asString(body.displayName);
+  if (!phone || !/^\d{6}$/.test(code) || !deviceId) {
+    res.status(400).json({ ok: false, error: 'Enter the 6-digit code.' });
+    return;
+  }
+  try {
+    const row = await pool.query<{ code_hash: string; expires_at: Date; attempts: number }>(
+      `SELECT code_hash, expires_at, attempts FROM otp_challenges WHERE phone = $1`,
+      [phone],
+    );
+    if (!row.rowCount) {
+      res.status(400).json({ ok: false, error: 'Request a new code.' });
+      return;
+    }
+    const challenge = row.rows[0];
+    if (challenge.attempts >= 5) {
+      res.status(429).json({ ok: false, error: 'Too many tries. Request a new code.' });
+      return;
+    }
+    if (challenge.expires_at.getTime() < Date.now()) {
+      res.status(400).json({ ok: false, error: 'That code expired. Request a new one.' });
+      return;
+    }
+    if (challenge.code_hash !== hashOtp(phone, code)) {
+      await pool.query(`UPDATE otp_challenges SET attempts = attempts + 1 WHERE phone = $1`, [phone]);
+      res.status(400).json({ ok: false, error: 'That code did not match.' });
+      return;
+    }
+    await linkRider(deviceId, displayName, phone);
+    await pool.query(`DELETE FROM otp_challenges WHERE phone = $1`, [phone]);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ ok: false, error: 'Could not verify OTP.' });
+  }
+});
+
+app.get('/me/rides', async (req, res) => {
+  const deviceId = deviceIdFrom(req);
+  const phone = asString(typeof req.query.phone === 'string' ? req.query.phone : '');
+  if (!deviceId) {
+    res.status(400).json({ ok: false, error: 'missing_device' });
+    return;
+  }
+  try {
+    const result = await pool.query(
+      `SELECT ride.code, ride.status, ride.destination_name, ride.started_at, ride.ended_at,
+              ride.distance_km, ride.elapsed_s
+       FROM ride_members m
+       JOIN riders r ON r.id = m.rider_id
+       JOIN rides ride ON ride.id = m.ride_id
+       WHERE r.device_id = $1 OR ($2 <> '' AND r.phone = $2)
+       ORDER BY ride.started_at DESC NULLS LAST
+       LIMIT 40`,
+      [deviceId, phone],
+    );
+    res.json({ ok: true, rides: result.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ ok: false, error: 'history_failed' });
   }
 });
 
@@ -65,7 +275,8 @@ app.post('/rides', async (req, res) => {
   const color = asString(body.color) || null;
   const timezone = asString(body.timezone) || null;
 
-  if (!deviceId || code.length < 4 || !destName || destLat == null || destLng == null) {
+  const phone = asString(body.phone);
+  if (!deviceId || !phone || code.length < 4 || !destName || destLat == null || destLng == null) {
     res.status(400).json({ ok: false, error: 'invalid_ride' });
     return;
   }
@@ -82,18 +293,8 @@ app.post('/rides', async (req, res) => {
 
   const client = await pool.connect();
   try {
+    const riderId = await linkRider(deviceId, displayName || 'Rider', phone);
     await client.query('BEGIN');
-    const riderId = (
-      await client.query<{ id: string }>(
-        `INSERT INTO riders (device_id, display_name)
-         VALUES ($1, $2)
-         ON CONFLICT (device_id) DO UPDATE
-           SET display_name = EXCLUDED.display_name,
-               updated_at = now()
-         RETURNING id`,
-        [deviceId, displayName || 'Rider'],
-      )
-    ).rows[0].id;
 
     const ride = (
       await client.query<{ id: string }>(
@@ -173,7 +374,8 @@ app.post('/rides/:code/join', async (req, res) => {
   const displayName = asString(body.displayName);
   const color = asString(body.color) || null;
   const code = asString(req.params.code).toUpperCase();
-  if (!deviceId || !code) {
+  const phone = asString(body.phone);
+  if (!deviceId || !code || !phone) {
     res.status(400).json({ ok: false, error: 'invalid_join' });
     return;
   }
@@ -191,7 +393,7 @@ app.post('/rides/:code/join', async (req, res) => {
       res.status(409).json({ ok: false, error: 'ride_closed' });
       return;
     }
-    const riderId = await upsertRider(deviceId, displayName);
+    const riderId = await linkRider(deviceId, displayName, phone);
     await pool.query(
       `INSERT INTO ride_members (ride_id, rider_id, roles, color)
        VALUES ($1, $2, $3, $4)

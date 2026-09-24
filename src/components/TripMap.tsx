@@ -12,6 +12,7 @@ type Props = {
   selectedId: string | null;
   onSelect: (id: string) => void;
   fitNonce?: number;
+  cameraMode?: 'overview' | 'follow';
 };
 
 type Size = { width: number; height: number };
@@ -106,6 +107,7 @@ function AppleMap({
   width,
   height,
   fitNonce = 0,
+  cameraMode = 'overview',
 }: Props & Size) {
   const maps = require('react-native-maps') as typeof import('react-native-maps');
   const MapView = maps.default;
@@ -118,6 +120,8 @@ function AppleMap({
     () => boundingRegion(rideFitPoints(trip)),
     [trip],
   );
+
+  const you = members.find((member) => member.isYou) ?? members[0];
 
   const fit = () => {
     const points = rideFitPoints(trip);
@@ -141,14 +145,26 @@ function AppleMap({
   };
 
   useEffect(() => {
-    if (fitNonce === 0) return;
-    fit();
-  }, [fitNonce]);
+    if (cameraMode !== 'follow' || !you) return;
+    mapRef.current?.animateToRegion(
+      {
+        ...you.coordinate,
+        latitudeDelta: 0.012,
+        longitudeDelta: 0.012,
+      },
+      280,
+    );
+  }, [cameraMode, you?.coordinate.latitude, you?.coordinate.longitude]);
 
   useEffect(() => {
-    if (trip.route.length < 2) return;
+    if (fitNonce === 0 || cameraMode === 'follow') return;
     fit();
-  }, [trip.route.length]);
+  }, [fitNonce, cameraMode]);
+
+  useEffect(() => {
+    if (cameraMode === 'follow' || trip.route.length < 2) return;
+    fit();
+  }, [trip.route.length, cameraMode]);
 
   return (
     <MapView
@@ -215,6 +231,7 @@ export function TripMap(props: Props) {
   const ready = size.width > 1 && size.height > 1;
   const canvas = ready ? <CrewCanvas {...props} {...size} /> : null;
   const fitNonce = props.fitNonce ?? 0;
+  const cameraMode = props.cameraMode ?? 'overview';
 
   return (
     <View
@@ -227,10 +244,10 @@ export function TripMap(props: Props) {
       {!ready ? null : Platform.OS === 'web' ? (
         canvas
       ) : Platform.OS === 'android' ? (
-        <StreetWebMap {...props} {...size} fitNonce={fitNonce} />
+        <StreetWebMap {...props} {...size} fitNonce={fitNonce} cameraMode={cameraMode} />
       ) : (
         <MapErrorBoundary fallback={canvas}>
-          <AppleMap {...props} {...size} fitNonce={fitNonce} />
+          <AppleMap {...props} {...size} fitNonce={fitNonce} cameraMode={cameraMode} />
         </MapErrorBoundary>
       )}
     </View>

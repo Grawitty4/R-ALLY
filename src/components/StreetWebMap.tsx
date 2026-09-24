@@ -12,6 +12,7 @@ type Props = {
   width: number;
   height: number;
   fitNonce: number;
+  cameraMode: 'overview' | 'follow';
 };
 
 const PAGE = `<!DOCTYPE html>
@@ -91,6 +92,7 @@ const PAGE = `<!DOCTYPE html>
       const layer = L.layerGroup().addTo(map);
       const stopsLayer = L.layerGroup().addTo(map);
       let routeLine = null;
+      let routeKey = '';
       let didInitialFit = false;
       let hadRoute = false;
       const markers = {};
@@ -113,7 +115,7 @@ const PAGE = `<!DOCTYPE html>
         const pts = collectFitPoints(payload);
         if (pts.length === 1) map.setView(pts[0], 15);
         else if (pts.length > 1) {
-          map.fitBounds(pts, { padding: [88, 88], maxZoom: 15 });
+          map.fitBounds(pts, { padding: [72, 72], maxZoom: 16 });
         }
       };
 
@@ -121,7 +123,7 @@ const PAGE = `<!DOCTYPE html>
         window.__last = payload;
         const members = payload.members || [];
         const stops = payload.stops || [];
-        const route = payload.route || [];
+        const route = payload.route;
         const seen = {};
         members.forEach(function (m) {
           seen[m.id] = true;
@@ -164,21 +166,34 @@ const PAGE = `<!DOCTYPE html>
             zIndexOffset: 200
           }).addTo(stopsLayer);
         });
-        if (routeLine) {
-          map.removeLayer(routeLine);
-          routeLine = null;
+        const route = payload.route;
+        if (Array.isArray(route)) {
+          const nextKey = String(route.length) + ':' + (route[0] ? route[0].lat + ',' + route[0].lng : '') + ':' + (route[route.length - 1] ? route[route.length - 1].lat + ',' + route[route.length - 1].lng : '');
+          if (nextKey !== routeKey) {
+            routeKey = nextKey;
+            if (routeLine) {
+              map.removeLayer(routeLine);
+              routeLine = null;
+            }
+            if (route.length >= 2) {
+              routeLine = L.polyline(route.map(function (point) { return [point.lat, point.lng]; }), {
+                color: '#C47B12',
+                weight: 5,
+                opacity: 0.92,
+                lineJoin: 'round',
+                lineCap: 'round'
+              }).addTo(map);
+            }
+          }
         }
-        if (route.length >= 2) {
-          routeLine = L.polyline(route.map(function (point) { return [point.lat, point.lng]; }), {
-            color: '#C47B12',
-            weight: 5,
-            opacity: 0.9
-          }).addTo(map);
+        if (payload.camera === 'follow' && payload.you) {
+          map.setView([payload.you.lat, payload.you.lng], 16, { animate: true });
+          return;
         }
-        if (!didInitialFit && (members.length || route.length)) {
+        if (!didInitialFit && (members.length || (Array.isArray(route) && route.length) || routeLine)) {
           didInitialFit = true;
           window.fitToRide();
-        } else if (route.length >= 2 && !hadRoute) {
+        } else if (Array.isArray(route) && route.length >= 2 && !hadRoute) {
           hadRoute = true;
           window.fitToRide();
         }
@@ -200,15 +215,23 @@ const PAGE = `<!DOCTYPE html>
 </body>
 </html>`;
 
-export function StreetWebMap({ trip, selectedId, onSelect, width, height, fitNonce }: Props) {
+export function StreetWebMap({ trip, selectedId, onSelect, width, height, fitNonce, cameraMode }: Props) {
   const webRef = useRef<WebView>(null);
   const loaded = useRef(false);
   const start = tripStartCoordinate(trip);
+  const you = trip.members.find((member) => member.isYou) ?? trip.members[0];
+  const routeSig = `${trip.route.length}:${trip.route[0]?.latitude}:${trip.route[trip.route.length - 1]?.longitude}`;
+  const lastRouteSig = useRef('');
 
-  const payload = useMemo(
-    () =>
-      JSON.stringify({
+  const payload = useMemo(() => {
+    const includeRoute = lastRouteSig.current !== routeSig;
+    if (includeRoute) lastRouteSig.current = routeSig;
+    return JSON.stringify({
         type: 'members',
+        camera: cameraMode,
+        you: you
+          ? { lat: you.coordinate.latitude, lng: you.coordinate.longitude }
+          : null,
         members: trip.members.map((member) => ({
           id: member.id,
           name: member.name,
@@ -243,17 +266,18 @@ export function StreetWebMap({ trip, selectedId, onSelect, width, height, fitNon
             kind: 'pit',
           })),
         ],
-        route: trip.route.map((point) => ({
-          lat: point.latitude,
-          lng: point.longitude,
-        })),
+        route: includeRoute
+          ? trip.route.map((point) => ({
+              lat: point.latitude,
+              lng: point.longitude,
+            }))
+          : null,
         fit: rideFitPoints(trip).map((point) => ({
           lat: point.latitude,
           lng: point.longitude,
         })),
-      }),
-    [trip, selectedId, start],
-  );
+      });
+  }, [trip, selectedId, start, cameraMode, you, routeSig]);
 
   const pushMembers = () => {
     webRef.current?.injectJavaScript(`render(${payload}); true;`);

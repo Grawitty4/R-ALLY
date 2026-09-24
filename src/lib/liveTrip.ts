@@ -1,3 +1,4 @@
+import { decodePolyline, encodePolyline } from './polyline';
 import {
   get,
   onDisconnect,
@@ -40,6 +41,7 @@ type LiveTripRecord = {
   createdBy: string;
   destination: { name: string; latitude: number; longitude: number };
   pitStops?: LivePitStop[];
+  routePolyline?: string;
   route?: Array<{ latitude: number; longitude: number }>;
   members?: Record<string, LiveMember>;
 };
@@ -86,7 +88,8 @@ export function toLocalTrip(
     createdBy: record.createdBy,
     destination: record.destination,
     pitStops,
-    route: record.route ?? [],
+    route:
+      (record.routePolyline ? decodePolyline(record.routePolyline) : record.route) ?? [],
     members,
   };
 }
@@ -110,7 +113,7 @@ export async function createLiveTrip(input: {
       latitude: stop.coordinate.latitude,
       longitude: stop.coordinate.longitude,
     })),
-    route: input.route,
+    routePolyline: input.route.length >= 2 ? encodePolyline(input.route) : '',
     members: {
       [input.deviceId]: buildMember(
         input.deviceId,

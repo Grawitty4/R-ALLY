@@ -19,23 +19,26 @@ import { Avatar } from '../components/Avatar';
 import { tapImpact } from '../lib/haptics';
 import { DEMO_CODE } from '../lib/tripCode';
 import { RidePlannerScreen } from './RidePlannerScreen';
+import { useAuth } from '../store/AuthContext';
 import { useTrip } from '../store/TripContext';
 import { colors, radii, space } from '../theme';
+import { formatPhone } from '../lib/phone';
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { startDemo, startTrip, joinTrip, savedName, liveReady } = useTrip();
+  const { name: accountName, phone, history, signOut, refreshHistory } = useAuth();
   const [joining, setJoining] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [code, setCode] = useState('');
-  const [name, setName] = useState(savedName);
+  const [name, setName] = useState(savedName || accountName);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (savedName) {
-      setName((current) => current || savedName);
+    if (savedName || accountName) {
+      setName((current) => current || savedName || accountName);
     }
-  }, [savedName]);
+  }, [savedName, accountName]);
 
   const onStart = () => {
     if (!name.trim()) {
@@ -205,6 +208,36 @@ export function HomeScreen() {
                 >
                   <Text style={styles.ghostText}>Watch a demo</Text>
                 </Pressable>
+                {history.length ? (
+                  <View style={styles.history}>
+                    <Text style={styles.historyTitle}>Your rides</Text>
+                    {history.slice(0, 8).map((ride) => (
+                      <View key={`${ride.code}-${ride.started_at}`} style={styles.historyRow}>
+                        <Text style={styles.historyDest} numberOfLines={1}>
+                          {ride.destination_name}
+                        </Text>
+                        <Text style={styles.historyMeta}>
+                          {ride.code} · {ride.status}
+                          {ride.distance_km ? ` · ${Number(ride.distance_km).toFixed(0)} km` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.historyEmpty}>Finished rides will land here.</Text>
+                )}
+                <Pressable
+                  onPress={() => {
+                    void refreshHistory();
+                  }}
+                >
+                  <Text style={styles.account}>
+                    {formatPhone(phone)} · refresh history
+                  </Text>
+                </Pressable>
+                <Pressable onPress={() => void signOut()}>
+                  <Text style={styles.account}>Sign out</Text>
+                </Pressable>
                 <Pressable
                   onPress={() => Clipboard.setStringAsync(DEMO_CODE)}
                   style={styles.foot}
@@ -338,6 +371,45 @@ const styles = StyleSheet.create({
     color: colors.creamMuted,
     fontWeight: '700',
     fontSize: 16,
+  },
+  history: {
+    marginTop: 8,
+    backgroundColor: colors.inkSoft,
+    borderRadius: radii.md,
+    padding: 14,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  historyTitle: {
+    color: colors.amber,
+    fontWeight: '800',
+    fontSize: 13,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  historyRow: {
+    gap: 2,
+  },
+  historyDest: {
+    color: colors.cream,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  historyMeta: {
+    color: colors.creamMuted,
+    fontSize: 12,
+  },
+  historyEmpty: {
+    color: 'rgba(246,241,232,0.45)',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  account: {
+    color: 'rgba(246,241,232,0.55)',
+    fontSize: 12,
+    textAlign: 'center',
+    fontWeight: '700',
   },
   joinCard: {
     backgroundColor: colors.paper,

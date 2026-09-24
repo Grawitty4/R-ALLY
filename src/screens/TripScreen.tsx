@@ -17,10 +17,12 @@ export function TripScreen() {
   const insets = useSafeAreaInsets();
   const { trip, selectedId, selectMember, endTrip } = useTrip();
   const [fitNonce, setFitNonce] = useState(0);
+  const [cameraMode, setCameraMode] = useState<'overview' | 'follow'>('overview');
 
   if (!trip) return null;
 
   const selected = trip.members.find((member) => member.id === selectedId) ?? null;
+  const following = cameraMode === 'follow';
 
   return (
     <View style={styles.root}>
@@ -31,6 +33,7 @@ export function TripScreen() {
           selectedId={selectedId}
           onSelect={selectMember}
           fitNonce={fitNonce}
+          cameraMode={cameraMode}
         />
       </View>
 
@@ -75,17 +78,41 @@ export function TripScreen() {
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Fit crew and route on screen"
+        accessibilityLabel="Fit crew and upcoming road on screen"
         style={[
           styles.fit,
-          { bottom: selected ? 210 : insets.bottom + 86 },
+          { bottom: selected ? 268 : insets.bottom + 150 },
         ]}
         onPress={() => {
           tap();
+          setCameraMode('overview');
           setFitNonce((current) => current + 1);
         }}
       >
         <MaterialCommunityIcons name="image-filter-center-focus" size={22} color={colors.ink} />
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={following ? 'Stop following' : 'Start navigation view'}
+        style={[
+          styles.start,
+          following && styles.startActive,
+          { bottom: selected ? 210 : insets.bottom + 92 },
+        ]}
+        onPress={() => {
+          tap();
+          setCameraMode((current) => (current === 'follow' ? 'overview' : 'follow'));
+        }}
+      >
+        <MaterialCommunityIcons
+          name={following ? 'pause' : 'navigation'}
+          size={20}
+          color={following ? colors.cream : colors.ink}
+        />
+        <Text style={[styles.startText, following && styles.startTextActive]}>
+          {following ? 'Exit' : 'Start'}
+        </Text>
       </Pressable>
 
       <View style={[styles.bottom, { paddingBottom: selected ? 0 : insets.bottom + 12 }]}>
@@ -191,6 +218,34 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 5,
+  },
+  start: {
+    position: 'absolute',
+    left: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.amber,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: radii.pill,
+    zIndex: 5,
+    shadowColor: '#000',
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 5,
+  },
+  startActive: {
+    backgroundColor: colors.ink,
+  },
+  startText: {
+    color: colors.ink,
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  startTextActive: {
+    color: colors.cream,
   },
   bottom: {
     position: 'absolute',

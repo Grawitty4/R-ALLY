@@ -14,6 +14,7 @@ import { isFirebaseConfigured } from '../lib/firebase';
 import { geocodePlace } from '../lib/geocode';
 import { moveToward } from '../lib/geo';
 import { colorFromId, getDeviceId, getSavedName, saveName } from '../lib/identity';
+import { useAuth } from './AuthContext';
 import {
   createLiveTrip,
   joinLiveTrip,
@@ -59,6 +60,7 @@ const TripContext = createContext<TripContextValue | null>(null);
 const PUNE = { latitude: 18.5204, longitude: 73.8567 };
 
 export function TripProvider({ children }: { children: React.ReactNode }) {
+  const { phone: accountPhone } = useAuth();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -314,6 +316,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       code,
       deviceId,
       displayName: name,
+      phone: accountPhone,
       destination,
       start: coordinate,
       pitStops,
@@ -323,7 +326,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     attachLive(code, deviceId);
     setSelectedId(null);
     return { ok: true };
-  }, [attachLive, deviceId, rememberName]);
+  }, [accountPhone, attachLive, deviceId, rememberName]);
 
   const joinTrip = useCallback(async (rawCode: string, rawName: string): Promise<Result> => {
     const code = normalizeCode(rawCode);
@@ -374,7 +377,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       };
     }
     if (!result.ok) return result;
-    void archiveJoinRide({ code, deviceId, displayName: name });
+    void archiveJoinRide({ code, deviceId, displayName: name, phone: accountPhone });
     setTrip(
       localLiveTrip(
         code,
@@ -389,7 +392,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     attachLive(code, deviceId);
     setSelectedId(null);
     return { ok: true };
-  }, [attachLive, deviceId, rememberName, startDemo]);
+  }, [accountPhone, attachLive, deviceId, rememberName, startDemo]);
 
   const endTrip = useCallback(() => {
     const code = liveCodeRef.current;

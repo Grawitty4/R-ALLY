@@ -138,6 +138,9 @@ Node service in this folder. Phones call it over HTTPS. It is the only process t
 | Method | Path | Who | What |
 |---|---|---|---|
 | GET | `/health` | anyone | DB ping |
+| POST | `/auth/otp/request` | phone | start OTP (set `OTP_ECHO=1` to see the code while testing) |
+| POST | `/auth/otp/verify` | phone | verify OTP and link rider |
+| GET | `/me/rides` | signed-in device | that rider’s history |
 | POST | `/rides` | marshal | create logbook row + waypoints |
 | POST | `/rides/:code/join` | rider | add member |
 | POST | `/rides/:code/samples` | rider | append GPS trace (~1 s buffer, ~30 s batches) |
@@ -173,3 +176,7 @@ SELECT COUNT(*) FROM rally.ride_samples;
 ```
 
 Do not put `DATABASE_URL` in the Expo `.env`.
+
+OTP login: run [`migrate_otp.sql`](migrate_otp.sql) in TablePlus.
+
+SMS: optional. Set `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the API service. Keep `OTP_ECHO=1` until that is live so you can still test without DLT. Template must include `{{otp}}`.
