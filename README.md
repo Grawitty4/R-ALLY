@@ -123,7 +123,7 @@ Never commit `.env`. Pushing `main` is the pipeline. The host for riders is the 
 ```
 Phones (R-ALLY APK)
   ├─ Firebase Realtime Database     live members, GPS, roles, route  (during the ride)
-  └─ Railway API → PostgreSQL       plan, bikes, samples, recap     (create + end + history)
+  └─ Railway API → PostgreSQL schema `rally`   plan, bikes, samples, recap
 ```
 
 Firebase is the walkie-talkie. Postgres is the logbook. We keep both.
@@ -132,17 +132,18 @@ Current Firebase project is enough **for live tracking at club scale**. It is **
 
 ---
 
-## Data we will store (planned)
+## Data we will store
 
-Full SQL lives in conversation history until we add `server/` migrations. Shape:
+SQL: [`server/schema.sql`](server/schema.sql) (Postgres schema `rally` on Railway). How live GPS vs recap (including overtakes) flows: [`server/README.md`](server/README.md).
 
 - **riders** / **bikes** — person and machine (name, CC, nickname)
-- **rides** — code, destination, start/end, then recap fields (duration, avg speed, top group speed, avg pit break, …)
+- **rides** — code, destination, start/end, then recap (elapsed vs moving time, distance, speeds, elevation, pit breaks, group spread)
 - **ride_waypoints** — start, pits, destination
-- **ride_members** — roles, which bike, per-person speed and overtakes
-- **ride_samples** — downsampled GPS used to compute stats (not a live map)
+- **ride_members** — roles, which bike, per-person stats, finish order, overtakes
+- **ride_samples** — GPS trace used to *compute* stats (not the live map)
 - **ride_stops** / **ride_overtakes** — breaks and passes
-- **story_tags** — fun recap labels, including a light “aggressive rider” tag
+- **ride_photos** — optional recap photos on the map
+- **story_tags** — fun recap labels
 
 Roles stay a catalog (`rider`, `marshal`, `head_marshal`, `admin`) so marshal privileges can grow without a new product.
 

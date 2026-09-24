@@ -23,6 +23,13 @@ import {
   subscribeLiveTrip,
 } from '../lib/liveTrip';
 import {
+  archiveCreateRide,
+  archiveJoinRide,
+  archiveLeaveRide,
+  archiveSamples,
+  type ArchiveSample,
+} from '../lib/rallyApi';
+import {
   applyAssignableRole,
   CREATOR_ROLES,
   JOINER_ROLES,
@@ -60,6 +67,9 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   const stoppedAtRef = useRef<number | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const liveCodeRef = useRef<string | null>(null);
+  const pendingSamplesRef = useRef<ArchiveSample[]>([]);
+  const lastLivePublishRef = useRef(0);
+  const lastSampleFlushRef = useRef(0);
 
   useEffect(() => {
     getDeviceId().then(setDeviceId);
@@ -87,9 +97,23 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   const attachLive = useCallback((code: string, id: string) => {
     unsubscribeRef.current?.();
     liveCodeRef.current = code;
+    pendingSamplesRef.current = [];
+    lastLivePublishRef.current = 0;
+    lastSampleFlushRef.current = 0;
     unsubscribeRef.current = subscribeLiveTrip(code, id, (next) => {
       setTrip(next);
     });
+  }, []);
+
+  const flushSamples = useCallback(async (code: string, id: string) => {
+    const batch = pendingSamplesRef.current;
+    if (batch.length === 0) return;
+    pendingSamplesRef.current = [];
+    const result = await archiveSamples({ code, deviceId: id, samples: batch });
+    if (!result.ok && !result.skipped) {
+      pendingSamplesRef.current = [...batch, ...pendingSamplesRef.current].slice(-2000);
+    }
+    lastSampleFlushRef.current = Date.now();
   }, []);
 
   useEffect(() => {
@@ -135,8 +159,8 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: 3000,
-          distanceInterval: 8,
+          timeInterval: 1000,
+          distanceInterval: 4,
         },
         (pos) => {
           const speedKmh = Math.max(0, (pos.coords.speed ?? 0) * 3.6);
@@ -145,17 +169,38 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           } else if (!stoppedAtRef.current) {
             stoppedAtRef.current = Date.now();
           }
-          publishLiveLocation({
-            code,
-            deviceId,
-            coordinate: {
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-            },
-            heading: pos.coords.heading ?? 0,
+          const coordinate = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+          };
+          pendingSamplesRef.current.push({
+            recordedAt: new Date().toISOString(),
+            lat: coordinate.latitude,
+            lng: coordinate.longitude,
+            altitudeM: pos.coords.altitude,
+            accuracyM: pos.coords.accuracy,
             speedKmh,
-            stoppedAt: stoppedAtRef.current,
-          }).catch(() => undefined);
+            heading: pos.coords.heading ?? 0,
+            stopped: speedKmh < 4,
+          });
+          const now = Date.now();
+          if (
+            pendingSamplesRef.current.length >= 25 ||
+            now - lastSampleFlushRef.current >= 30_000
+          ) {
+            void flushSamples(code, deviceId);
+          }
+          if (now - lastLivePublishRef.current >= 3_000) {
+            lastLivePublishRef.current = now;
+            publishLiveLocation({
+              code,
+              deviceId,
+              coordinate,
+              heading: pos.coords.heading ?? 0,
+              speedKmh,
+              stoppedAt: stoppedAtRef.current,
+            }).catch(() => undefined);
+          }
         },
       );
     })();
@@ -163,7 +208,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription?.remove();
     };
-  }, [trip?.code, trip?.isDemo, deviceId]);
+  }, [trip?.code, trip?.isDemo, deviceId, flushSamples]);
 
   const startDemo = useCallback(() => {
     void detachLive();
@@ -265,6 +310,15 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
         message: 'Could not create a live trip. Check Firebase keys, Realtime Database, and rules.',
       };
     }
+    void archiveCreateRide({
+      code,
+      deviceId,
+      displayName: name,
+      destination,
+      start: coordinate,
+      pitStops,
+      route,
+    });
     setTrip(localLiveTrip(code, deviceId, coordinate, destination, pitStops, [...CREATOR_ROLES], route));
     attachLive(code, deviceId);
     setSelectedId(null);
@@ -320,6 +374,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       };
     }
     if (!result.ok) return result;
+    void archiveJoinRide({ code, deviceId, displayName: name });
     setTrip(
       localLiveTrip(
         code,
@@ -337,10 +392,26 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   }, [attachLive, deviceId, rememberName, startDemo]);
 
   const endTrip = useCallback(() => {
+    const code = liveCodeRef.current;
+    const id = deviceId;
+    const you = trip?.members.find((member) => member.id === id);
+    const asAdmin = Boolean(
+      you && (you.roleIds.includes('admin') || you.roleIds.includes('head_marshal')),
+    );
+    const leftover = pendingSamplesRef.current;
+    pendingSamplesRef.current = [];
     void detachLive();
     setTrip(null);
     setSelectedId(null);
-  }, [detachLive]);
+    if (code && id) {
+      void (async () => {
+        if (leftover.length > 0) {
+          await archiveSamples({ code, deviceId: id, samples: leftover });
+        }
+        await archiveLeaveRide(code, id, asAdmin);
+      })();
+    }
+  }, [detachLive, deviceId, trip]);
 
   const setMemberRole = useCallback(async (memberId: string, role: RoleId): Promise<Result> => {
     const current = trip;
